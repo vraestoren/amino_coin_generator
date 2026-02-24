@@ -1,4 +1,3 @@
-import requests
 from hmac import new
 from json import loads
 from json import dumps
@@ -6,6 +5,7 @@ from os import urandom
 from uuid import uuid4
 from hashlib import sha1
 from typing import BinaryIO
+from requests import Session
 from time import time, timezone
 from json_minify import json_minify
 from base64 import b64encode, b64decode
@@ -17,9 +17,12 @@ class Amino:
 			self,
 			device_id: str = None,
 			proxies: dict = None) -> None:
-		self.api = "https://service.aminoapps.com/api/v1/"
+		self.api = "https://service.aminoapps.com/api/v1"
 		self.device_id = self.generate_device_id(urandom(20)) if not device_id else device_id
-		self.headers = {
+		self.sid = None
+		self.user_id = None
+		self.session = Session()
+		self.session.headers = {
 			"NDCLANG": "en",
 			"NDCDEVICEID": self.device_id,
 			"AUID": str(uuid4()),
@@ -30,15 +33,13 @@ class Amino:
 			"Accept-Encoding": "gzip, deflate, br",
 			"Connection": "Keep-Alive"
 		}
-		self.sid = None
-		self.user_id = None
-		self.proxies = proxies
+		self.session.proxies.update(proxies)
 
 	def generate_signature(self, data: str) -> str:
-		self.headers["NDC-MSG-SIG"] = b64encode(
+		self.session.headers["NDC-MSG-SIG"] = b64encode(
 			bytes.fromhex("52") + new(bytes.fromhex("EAB4F1B9E3340CD1631EDE3B587CC3EBEDF1AFA9"), data.encode("utf-8"), sha1).digest()
 		).decode("utf-8")
-		return self.headers["NDC-MSG-SIG"]
+		return self.session.headers["NDC-MSG-SIG"]
 	
 	def generate_device_id(self, identifier: str) -> str:
 		return (
@@ -47,13 +48,13 @@ class Amino:
 	
 	def reload_socket(self) -> None:
 		data = f"{self.device_id}|{int(time() * 1000)}"
-		self.ws_headers = {
+		self.websocket_headers = {
 			"NDCDEVICEID": self.device_id,
 			"NDCAUTH": f"sid={self.sid}",
 			"NDC-MSG-SIG": self.generate_signature(data)
 		}
 		self.socket_time = time()
-		self.ws = create_connection(f"wss://ws1.narvii.com?signbody={data.replace('|', '%7C')}", header=self.ws_headers)
+		self.ws_connection = create_connection(f"wss://ws1.narvii.com?signbody={data.replace('|', '%7C')}", header=self.websocket_headers)
   
 	def login(
 			self,
@@ -69,15 +70,12 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		response = requests.post(
-			f"{self.api}/g/s/auth/login",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+		response = self.session.post(
+			f"{self.api}/g/s/auth/login", data=data).json()
 		if "sid" in response:
 			self.sid = response["sid"]
 			self.user_id = response["auid"]
-			self.headers["NDCAUTH"] = f"sid={self.sid}"
+			self.session.headers["NDCAUTH"] = f"sid={self.sid}"
 			if socket:
 				self.reload_socket()
 		return response
@@ -103,11 +101,8 @@ class Amino:
 			data["userActiveTimeChunkList"] = timers
 		data = json_minify(dumps(data))
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/community/stats/user-active-time",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/community/stats/user-active-time", data=data).json()
 
 	def request_verify_code(
 			self, 
@@ -129,11 +124,9 @@ class Amino:
 			data["type"] = 8
 		data = dumps(data)
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/g/s/auth/request-security-validation",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+			data=data).json()
 	
 	def register(
 			self,
@@ -164,34 +157,24 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/g/s/auth/register",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/g/s/auth/register", data=data).json()
 
 	def get_from_device_id(self, device_id: str) -> dict:
-		return requests.get(
-			f"{self.api}/g/s/auid?deviceId={device_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/g/s/auid?deviceId={device_id}").json()  
 
 	def accept_host(self, ndc_id: int, chat_id: str) -> dict:
 		data = dumps({
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/accept-organizer",
-			data=data,
-			headers=self.headers, 
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/accept-organizer", data=data).json() 
 		 
 	def get_notifications(self, ndc_id: int, start: int = 0, size: int = 10) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/notification?start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/notification?start={start}&size={size}").json() 
 		 
 	def check_device_id(self, device_id: str) -> dict:
 		data = dumps({
@@ -204,41 +187,29 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/g/s/device",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/g/s/device", data=data).json() 
 		 
 	def get_wallet_info(self) -> dict:
-		return requests.get(
-			f"{self.api}/g/s/wallet",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(f"{self.api}/g/s/wallet").json() 
 		 
 	def get_wallet_history(
 			self,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/g/s/wallet/coin/history?start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/g/s/wallet/coin/history?start={start}&size={size}").json() 
 		 
 	def my_communities(
 			self,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/g/s/community/joined?start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/g/s/community/joined?start={start}&size={size}").json()  
 		
 	def watch_ad(self) -> dict:
-		return requests.post(
-			f"{self.api}/g/s/wallet/ads/video/start",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/g/s/wallet/ads/video/start").json() 
 		 
 	def transfer_host(
 			self,
@@ -250,33 +221,25 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/transfer-organizer",
-			data=data,
-			headers=self.headers, 
-			proxies=self.proxies).json()  
+			data=data).json()  
 
 	def join_chat(self, ndc_id: int, chat_id: str) -> dict:
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/{self.user_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/{self.user_id}").json()  
 
 	def get_chat_messages(
 			self,
 			ndc_id: int,
 			chat_id: str,
 			size: int = 10) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message?v=2&pagingType=t&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message?v=2&pagingType=t&size={size}").json() 
 		 
 	def get_chat(self, ndc_id: int, chat_id: str) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}").json()  
 
 	def send_audio(
 			self,
@@ -293,11 +256,9 @@ class Amino:
 			"attachedObject": None
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+			data=data).json() 
 		 
 	def ban_user(
 			self,
@@ -313,17 +274,13 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/ban",
-			data=data,
-			headers=self.headers, 
-			proxies=self.proxies).json() 
+			data=data).json() 
 		 
 	def get_banned_users(self, ndc_id: int, start: int = 0, size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/user-profile?type=banned&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/user-profile?type=banned&start={start}&size={size}").json()  
 
 	def unban_user(
 			self,
@@ -337,11 +294,9 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/unban",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+			data=data).json() 
 		 
 	def create_chat_thread(
 			self,
@@ -355,11 +310,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread", data=data).json()  
 
 	def delete_message(
 			self,
@@ -375,16 +327,12 @@ class Amino:
 		})
 		self.generate_signature(data)
 		if as_staff:
-			return requests.delete(
-				f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message/{message_id}/admin",
-				headers=self.headers,
-				proxies=self.proxies).json() 
+			return self.session.delete(
+				f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message/{message_id}/admin").json() 
 		else:
-			return requests.post(
+			return self.session.post(
 				f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message/{message_id}",
-				data=data,
-				headers=self.headers,
-				proxies=self.proxies).json()  
+				data=data).json()  
 
 	def kick_user(
 			self,
@@ -392,10 +340,8 @@ class Amino:
 			chat_id: str,
 			user_id: str,
 			allowRejoin: int = 0) -> dict:
-		return requests.delete(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/{user_id}?allowRejoin={allowRejoin}",
-			headers=self.headers,
-			proxies=self.proxies).json()   
+		return self.session.delete(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/{user_id}?allowRejoin={allowRejoin}").json()   
 
 	def create_sticker_pack(
 			self,
@@ -411,20 +357,15 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/sticker-collection",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/sticker-collection", data=data).json() 
 		 
 	def search_user_chat(
 			self,
 			ndc_id: int,
 			user_id: str) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/chat/thread?type=exist-single&cv=1.2&q={user_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/chat/thread?type=exist-single&cv=1.2&q={user_id}").json()  
 
 	def change_vc_permission(
 			self,
@@ -436,11 +377,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/vvchat-permission",
-			headers=self.headers,
-			data=data,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/vvchat-permission", data=data).json()  
 
 	def send_embed(
 			self,
@@ -469,11 +407,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message",
-			headers=self.headers,
-			data=data,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message", data=data).json() 
 		 
 	def send_message(
 			self,
@@ -493,11 +428,8 @@ class Amino:
 		self.generate_signature(data)
 		if reply_message_id:
 			data["replyMessageId"] = reply_message_id
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message", data=data).json() 
 		 
 	def get_chat_users(
 			self,
@@ -505,45 +437,36 @@ class Amino:
 			chat_id: str,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member&type=default&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member&type=default&start={start}&size={size}").json() 
 		 
 	def my_chat_threads(
 			self,
 			ndc_id: int,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/chat/thread?type=joined-me&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/chat/thread?type=joined-me&start={start}&size={size}").json()  
 
 	def get_public_chat_threads(
 			self,
 			ndc_id: int,
 			start: int = 0,
 			size: int = 10) -> dict:
-		return requests.get(
-			f"{self.api}/chat/live-threads?ndcId=x{ndc_id}&start={start}&size={size}",
-			headers=self.headers).json()
+		return self.session.get(
+			f"{self.api}/chat/live-threads?ndcId=x{ndc_id}&start={start}&size={size}").json()
 		 
 	def thank_tip(
 			self,
 			ndc_id: int,
 			chat_id: str,
 			user_id: str) -> dict:
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/tipping/tipped-users/{user_id}/thank",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/tipping/tipped-users/{user_id}/thank").json()  
 
 	def get_user(self, ndc_id: int, user_id: str) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}?action=visit",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}?action=visit").json() 
 		 
 	def get_tipped_users_wall(
 			self,
@@ -551,10 +474,8 @@ class Amino:
 			blog_id: str,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/blog/{blog_id}/tipping/tipped-users-summary?start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/blog/{blog_id}/tipping/tipped-users-summary?start={start}&size={size}").json() 
 		
 	def send_image(
 			self,
@@ -572,11 +493,8 @@ class Amino:
 			"attachedObject": None
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message", data=data).json() 
 		 
 	def join_community(
 			self,
@@ -588,11 +506,8 @@ class Amino:
 		if invitation_id:
 			data["invitationId"] = invitation_id
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/community/join",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/community/join", data=data).json() 
 	
 	def invite_to_chat(
 			self,
@@ -608,40 +523,31 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/invite",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/invite", data=data).json()  
 
 	def get_online_users(
 			self,
 			ndc_id: int,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/live-layer?topic=ndtopic:x{ndc_id}:online-members&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/live-layer?topic=ndtopic:x{ndc_id}:online-members&start={start}&size={size}").json()  
 
 	def get_recent_users(
 			self,
 			ndc_id: str,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/user-profile?type=recent&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/user-profile?type=recent&start={start}&size={size}").json() 
 	
 	def leave_chat(
 			self,
 			ndc_id: int,
 			chat_id: str) -> dict:
-		return requests.delete(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/{self.user_id}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.delete(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/{self.user_id}").json() 
 		
 	def send_gif(
 			self,
@@ -659,11 +565,8 @@ class Amino:
 			"attachedObject": None
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/message", data=data).json() 
 
 	def comment_profile(
 			self,
@@ -677,17 +580,12 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/comment",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/comment", data=data).json() 
 		 
 	def get_from_code(self, code: str) -> dict:
-		return requests.get(
-			f"{self.api}/g/s/link-resolution?q={code}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/g/s/link-resolution?q={code}").json() 
 		 
 	def get_user_blogs(
 			self,
@@ -695,16 +593,12 @@ class Amino:
 			user_id: str,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/blog?type=user&q={user_id}&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/blog?type=user&q={user_id}&start={start}&size={size}").json() 
 		 
 	def get_community_info(self, ndc_id: int) -> dict:
-		return requests.get(
-			f"{self.api}/g/s-x{ndc_id}/community/info?withInfluencerList=1&withTopicList=true&influencerListOrderStrategy=fansCount",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/g/s-x{ndc_id}/community/info?withInfluencerList=1&withTopicList=true&influencerListOrderStrategy=fansCount").json() 
 	
 	def check_in(
 			self,
@@ -715,11 +609,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/check-in",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/check-in", data=data).json()  
 
 	def send_coins_blog(
 			self,
@@ -735,11 +626,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/blog/{blog_id}/tipping",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/blog/{blog_id}/tipping", data=data).json() 
 		 
 	def send_coins_chat(
 			self,
@@ -755,11 +643,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/tipping",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/tipping", data=data).json()  
 
 	def lottery(
 			self,
@@ -770,11 +655,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/check-in/lottery",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/check-in/lottery", data=data).json()  
 		
 	def edit_chat(
 			self,
@@ -790,86 +672,65 @@ class Amino:
 		if background_image:
 			data["media"] = [100, background_image, None],
 			self.generate_signature(data)
-			response.append(requests.post(
+			response.append(self.session.post(
 				f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/member/{self.user_id}/background",
-				data=data,
-				headers=self.headers,
-				proxies=self.proxies).json())
+				data=data).json())
 		if content:
 			data["content"] = content
 		if title:
 			data["title"] = title
 		data = dumps(data)
 		generate_signature(data)
-		response.append(requests.post(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}",
-			data=data,
-			headers=self.headers, 
-			proxies=self.proxies).json())
+		response.append(self.session.post(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}", data=data).json())
 		return response
 	   
 	def moderation_history_community(self, ndc_id: int, size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/admin/operation?pagingType=t&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/admin/operation?pagingType=t&size={size}").json()  
 		
 	def moderation_history_user(
 			self,
 			ndc_id: int, 
 			user_id: str = None, 
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={user_id}&objectType=0&pagingType=t&size={size}",
-			headers=self.headers, 
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={user_id}&objectType=0&pagingType=t&size={size}").json() 
 		 
 	def moderation_history_blog(
 			self,
 			ndc_id: int,
 			blog_id: str,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={blog_id}&objectType=1&pagingType=t&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={blog_id}&objectType=1&pagingType=t&size={size}").json()  
 		
 	def moderation_history_quiz(
 			self, 
 			ndc_id: int,
 			quiz_id: str, 
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={quiz_id}&objectType=1&pagingType=t&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={quiz_id}&objectType=1&pagingType=t&size={size}").json()  
 		
 	def moderation_history_wiki(
 			self, ndc_id: int,
 			wiki_id: str,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={wiki_id}&objectType=2&pagingType=t&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/admin/operation?objectId={wiki_id}&objectType=2&pagingType=t&size={size}").json() 
 		 
 	def give_curator(self, ndc_id: int, user_id: str) -> dict:
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/curator",
-			headers=self.headers,
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/curator").json()  
 		
 	def give_leader(self, ndc_id: int, user_id: str) -> dict:
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/leader", 
-			headers=self.headers, 
-			proxies=self.proxies).json()  
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/leader").json()  
 		
 	def get_bubble_info(self, ndc_id: int, bubble_id: str) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/chat/chat-bubble/{bubble_id}", 
-			headers=self.headers, 
-			proxies=self.proxies).json() 
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/chat/chat-bubble/{bubble_id}").json() 
 		 
 	def buy_bubble(self, ndc_id: int, bubble_id: str) -> dict:
 		data = dumps({
@@ -879,11 +740,9 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/store/purchase", 
-			data=data, 
-			headers=self.headers, 
-			proxies=self.proxies).json() 
+			data=data).json() 
 
 	def invite_to_vc(
 			self,
@@ -894,31 +753,23 @@ class Amino:
 			"uid": user_id
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}/vvchat-presenter/invite", 
-			data=data, headers=self.headers, 
-			proxies=self.proxies).json()  
+			data=data).json()  
 	
 	def delete_chat(self, ndc_id: int, chat_id: str) -> dict:
-		return requests.delete(
-			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}", 
-			headers=self.headers, 
-			proxies=self.proxies).json()  
+		return self.session.delete(
+			f"{self.api}/x{ndc_id}/s/chat/thread/{chat_id}").json()  
 	
 	def delete_notification(
 			self,
 			ndc_id: int,
 			notification_id: str) -> dict:
-		return requests.delete(
-			f"{self.api}/x{ndc_id}/s/notification/{notificationId}", 
-			headers=self.headers, 
-			proxies=self.proxies).json() 
+		return self.session.delete(
+			f"{self.api}/x{ndc_id}/s/notification/{notificationId}").json() 
 		 
 	def clear_notifications(self, ndc_id: int) -> dict:
-		return requests.delete(
-			f"{self.api}/x{ndc_id}/s/notification",
-			headers=self.headers,
-			proxies=self.proxies).json() 
+		return self.session.delete(f"{self.api}/x{ndc_id}/s/notification").json() 
 		
 	def edit_profile(
 			self,
@@ -952,11 +803,8 @@ class Amino:
 			data["extensions"] = {"customTitles": titles_colors}
 		data = dumps(data)
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/user-profile/{self.user_id}",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/user-profile/{self.user_id}", data=data).json()
 		 
 	def activate_account(
 			self,
@@ -971,21 +819,16 @@ class Amino:
 			"deviceID": self.device_id
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/g/s/auth/activate-email",
-			data=data,
-			headers=self.headers, 
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/g/s/auth/activate-email", data=data).json()
 	
 	def get_recent_blogs(
 			self,
 			ndc_id: int,
 			start: int = 0,
 			size: int = 10) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/feed/blog-all?pagingType=t&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/feed/blog-all?pagingType=t&start={start}&size={size}").json()
 	
 	def like_blog(self, ndc_id: int, blog_id: str) -> dict:
 		data = dumps({
@@ -994,23 +837,17 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/blog/{blog_id}/vote?cv=1.2",
-			data=data,
-			headers=self.headers, 
-			proxies=self.proxies).json()
+			data=data).json()
 
 	def follow_user(self, ndc_id: int, user_id: str) -> dict:
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/member",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/member").json()
 		
 	def unfollow_user(self, ndc_id: int, user_id: str) -> dict:
-		return requests.delete(
-			f"{self.api}/x{ndc_id}/s/user-profile/{self.user_id}/joined/{user_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.delete(
+			f"{self.api}/x{ndc_id}/s/user-profile/{self.user_id}/joined/{user_id}").json()
 	
 	def get_user_following(
 			self,
@@ -1018,10 +855,8 @@ class Amino:
 			user_id: str,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/joined?start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/joined?start={start}&size={size}").json()
 
 	def get_user_followers(
 			self,
@@ -1029,38 +864,28 @@ class Amino:
 			user_id: str,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/member?start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/user-profile/{user_id}/member?start={start}&size={size}").json()
 	
 	def block_user(self, ndc_id: int, user_id: str) -> dict:
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/block/{user_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/block/{user_id}").json()
 		
 	def unblock_user(self, ndc_id: int, user_id: str) -> dict:
-		return requests.delete(
-			f"{self.api}/x{ndc_id}/s/block/{user_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.delete(
+			f"{self.api}/x{ndc_id}/s/block/{user_id}").json()
 
 	def get_online_users(
 			self,
 			ndc_id: int,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/live-layer?topic=ndtopic:x{ndc_id}:online-members&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/live-layer?topic=ndtopic:x{ndc_id}:online-members&start={start}&size={size}").json()
 
 	def get_blog_info(self, ndc_id: int, blog_id: str) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/blog/{blog_id}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/blog/{blog_id}").json()
 	
 	def get_user_blogs(
 			self,
@@ -1068,10 +893,8 @@ class Amino:
 			user_id: str,
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/x{ndc_id}/s/blog?type=user&q={user_id}&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.get(
+			f"{self.api}/x{ndc_id}/s/blog?type=user&q={user_id}&start={start}&size={size}").json()
 	
 	def set_activity_status(
 			self,
@@ -1088,11 +911,9 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
+		return self.session.post(
 			f"{self.api}/x{ndc_id}/s/user-profile/{self.user_id}/online-status",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+			data=data).json()
 	
 	def get_invite_codes(
 			self,
@@ -1100,18 +921,16 @@ class Amino:
 			status: str = "normal",
 			start: int = 0,
 			size: int = 25) -> dict:
-		return requests.get(
-			f"{self.api}/g/s-x{ndc_id}/community/invitation?status={status}&start={start}&size={size}",
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.get(
+			f"{self.api}/g/s-x{ndc_id}/community/invitation?status={status}&start={start}&size={size}").json()
 	
-	def listen(self, return_data: int = 1) -> dict:
+	def listen(self) -> dict:
 		if((time() - self.socket_time) > 100):
-			self.ws.close()
+			self.ws_connection.close()
 			self.reload_socket()
 		while 1:
 			try:
-				return loads(self.ws.recv())	 
+				return loads(self.ws_connection.recv())	 
 			except:
 				continue
 
@@ -1126,11 +945,8 @@ class Amino:
 			"deviceID": self.device_id
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/g/s/auth/change-password",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/g/s/auth/change-password", data=data).json()
 	
 	def post_blog(
 			self,
@@ -1171,11 +987,8 @@ class Amino:
 			data["taggedBlogCategoryIdList"] = categories_list
 		data = dumps(data)
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/blog",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/blog", data=data).json()
 	
 	def repost_blog(
 			self,
@@ -1197,11 +1010,8 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/x{ndc_id}/s/blog",
-			data=data, 
-			headers=self.headers, 
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/x{ndc_id}/s/blog", data=data).json()
 
 	def register_phone(
 			self,
@@ -1229,8 +1039,5 @@ class Amino:
 			"timestamp": int(time() * 1000)
 		})
 		self.generate_signature(data)
-		return requests.post(
-			f"{self.api}/g/s/auth/register",
-			data=data,
-			headers=self.headers,
-			proxies=self.proxies).json()
+		return self.session.post(
+			f"{self.api}/g/s/auth/register", data=data).json()
