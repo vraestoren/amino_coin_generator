@@ -60,12 +60,12 @@ def send_coins(client: Amino) -> None:
             amount = min(total_coins, 500)
             if amount > 0:
                 response = account_client.send_coins_blog(
-                    ndc_id=ndc_id, blog_Id=blog_id, coins=amount)["api:message"]
+                    ndc_id=ndc_id, blog_id=blog_id, coins=amount)["api:message"]
                 logger.info(f"Sent {amount} coins | Response: {response}")
         except Exception as exception:
             logger.error(f"Failed to send coins: {exception}")
 
-def start(init_client: Amino) -> None: # как протрезвеешь подумай об этом - Крист.
+def start(init_client: Amino) -> None:
     ndc_id = init_client.get_from_code(
         input("Community link: "))["linkInfoV2"]["extensions"]["community"]["ndcId"]
     delay = int(input("Generation delay in seconds: "))
