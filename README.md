@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  Automate your <strong>Amino coin farming</strong> — earn at least <strong>130 coins per day</strong> per account!  
+  Automate your <strong>Amino coin farming</strong> - earn at least <strong>130 coins per day</strong> per account!  
 </p>
 
 ---
